@@ -1,0 +1,23 @@
+# Secrets
+.env
+.env.local
+agents.json
+
+# Runtime
+sandbox/
+logs/
+memory/
+plans/
+__pycache__/
+*.py[cod]
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Venv
+.venv/
+venv/
