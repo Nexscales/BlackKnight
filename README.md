@@ -9,6 +9,7 @@ Black/red terminal UI · plan-first workflow · sub-agent delegation · per-agen
 [Features](#-features) · [Install](#-installation) · [Configure](#-configuration) · [Usage](#-usage) · [Architecture](#-architecture)
 
 </div>
+<img width="1896" height="1014" alt="Screenshot_10" src="https://github.com/user-attachments/assets/5dba954f-1271-450c-8c05-244f16992995" />
 
 ---
 
