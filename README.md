@@ -1,3 +1,5 @@
+<img width="806" height="225" alt="179267641700b6" src="https://github.com/user-attachments/assets/00815dba-4705-4015-a11c-c653aef95c53" />
+
 <div align="center">
 
 # ⚔️ BlackKnight
