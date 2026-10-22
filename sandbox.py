@@ -58,27 +58,81 @@ def run_command(cmd: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     timeout = min(int(timeout), MAX_TIMEOUT)
     if (bad := is_dangerous(cmd)):
         return {"error": "blocked by policy", "pattern": bad, "command": cmd}
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+
+    # ── КРИТИЧНО: Popen вместо run, чтобы контролировать kill ──
     try:
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-        r = subprocess.run(
-            cmd, shell=True, cwd=str(SANDBOX_DIR),
-            capture_output=True, timeout=timeout, env=env,
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            cwd=str(SANDBOX_DIR),
+            stdin=subprocess.DEVNULL,          # ← не ждать ввода
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
+            ),
         )
-        return {
-            "ok": True,
-            "command": cmd,
-            "stdout": truncate(decode(r.stdout)),
-            "stderr": truncate(decode(r.stderr)),
-            "returncode": r.returncode,
-            "platform": "windows" if IS_WINDOWS else "posix",
-        }
-    except subprocess.TimeoutExpired:
-        return {"error": "timeout", "command": cmd, "timeout": timeout}
     except Exception as e:
         return {"error": str(e), "command": cmd}
 
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return {
+            "ok": proc.returncode == 0,
+            "command": cmd,
+            "stdout": truncate(decode(stdout)),
+            "stderr": truncate(decode(stderr)),
+            "returncode": proc.returncode,
+            "platform": "windows" if IS_WINDOWS else "posix",
+        }
+
+    except subprocess.TimeoutExpired:
+        # ── Kill entire process tree (Windows) ──
+        if IS_WINDOWS:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=10,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+        # ── Close pipes so communicate() doesn't hang ──
+        for p in (proc.stdout, proc.stderr):
+            try:
+                if p:
+                    p.close()
+            except Exception:
+                pass
+
+        return {
+            "error": "timeout",
+            "command": cmd,
+            "timeout": timeout,
+            "note": "process tree killed",
+        }
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"error": str(e), "command": cmd}
+        
 def run_python(code: str, timeout: int = 30) -> dict:
     timeout = min(int(timeout), MAX_TIMEOUT)
     tmp = SANDBOX_DIR / f".tmp_{os.urandom(4).hex()}.py"
