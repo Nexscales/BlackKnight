@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "default": {},
+    "recon": {},
+    "exploit": {},
+    "privesc": {}
+  },
+  "default_profile": "default"
+}
