@@ -20,7 +20,8 @@ BlackKnight is intended **exclusively** for use in isolated, self-owned, or expl
 
 **Do not** use this tool against systems you do not own or have explicit permission to test. Unauthorized use may violate local and international laws. The author assumes **no liability** for misuse or damage caused by this software.
 
----
+---<img width="1109" height="376" alt="Screenshot_26" src="https://github.com/user-attachments/assets/1b637dbe-ef6d-412f-a4b2-605032902e5a" />
+
 
 ## 📑 Table of Contents
 
@@ -59,6 +60,7 @@ BlackKnight is intended **exclusively** for use in isolated, self-owned, or expl
 $ python main.py --mode auto --goal "enumerate open services on 10.10.10.5"
 text
 <img width="1528" height="978" alt="Screenshot_23" src="https://github.com/user-attachments/assets/7bcc5b16-92ab-4de2-aa5e-81d0528e10d9" />
+<img width="1109" height="376" alt="Screenshot_26" src="https://github.com/user-attachments/assets/95001118-13ef-4bf2-9235-d41162c5e1db" />
 
 
 ---
