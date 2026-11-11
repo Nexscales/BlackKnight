@@ -8,7 +8,15 @@ Load order (later wins only if not already set):
 import os
 import re
 from pathlib import Path
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+        
 # ── load .env ──
 _ENV_FILE = Path(__file__).parent / ".env"
 

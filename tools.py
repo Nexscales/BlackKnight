@@ -8,7 +8,14 @@ import re
 from sandbox import run_command, run_python, write_file, read_file
 from skills import load_skill, skill_budget_left
 from memory import remember, recall, forget
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ── flag validation ──
 # Accepts: prefix{content} (any printable except whitespace/}) and 32-64 hex.

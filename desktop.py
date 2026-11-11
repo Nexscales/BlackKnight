@@ -20,7 +20,15 @@ os.environ["BK_HOST"] = "127.0.0.1"
 import uvicorn
 import webview
 from web_server import app, PORT
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+        
 HOST = "127.0.0.1"
 URL = f"http://{HOST}:{PORT}"
 TITLE = "BlackKnight"

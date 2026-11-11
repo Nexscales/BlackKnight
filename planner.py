@@ -11,7 +11,15 @@ Flow:
 import re
 from datetime import datetime
 from pathlib import Path
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+        
 PLANS_DIR = Path(__file__).parent / "plans"
 PLANS_DIR.mkdir(exist_ok=True)
 

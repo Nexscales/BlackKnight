@@ -18,7 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from config import MODEL, CONTEXT_WINDOW, BASE_URL
 import ui
 from main import run_task
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+        
 HOST = os.environ.get("BK_HOST", "127.0.0.1")   # не светим агент в локалку
 PORT = int(os.environ.get("BK_PORT", "8080"))    # батник передаёт BK_PORT
 MODES = {"auto", "chat", "agent", "dev"}

@@ -29,7 +29,14 @@ from difficulty import get_preset, is_valid, DIFFICULTY_ORDER
 import agents
 import planner
 import ui
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 RETRYABLE_ERRORS = (
     APIConnectionError,

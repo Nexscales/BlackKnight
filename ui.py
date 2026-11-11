@@ -20,7 +20,14 @@ from rich.box import ROUNDED, HEAVY
 
 from config import MODEL, CONTEXT_WINDOW
 from logger import log_event
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 PREVIEW_LINES       = 3
 PREVIEW_LINE_LEN    = 110

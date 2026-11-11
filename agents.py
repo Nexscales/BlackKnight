@@ -11,6 +11,14 @@ Timeout defaults to 60s, connect_timeout to 10s (per profile override).
 import json
 import os
 from pathlib import Path
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 AGENTS_FILE = Path(__file__).parent / "agents.json"
 

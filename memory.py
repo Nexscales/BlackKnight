@@ -7,7 +7,15 @@ via remember()/recall()/forget() tools.
 import json
 import time
 from pathlib import Path
-
+import sys as _sys, os as _os
+_os.environ["PYTHONUTF8"] = "1"
+_os.environ["PYTHONIOENCODING"] = "utf-8"
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+        
 MEM_DIR = Path(__file__).parent / "memory"
 MEM_DIR.mkdir(exist_ok=True)
 MEM_FILE = MEM_DIR / "memory.json"
