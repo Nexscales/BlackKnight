@@ -1,4 +1,4 @@
-# 🛡️ BlackKnight
+# ☠️ BlackKnight
 
 > Autonomous offensive-security agent for isolated lab environments.
 
@@ -36,7 +36,7 @@ BlackKnight is intended **exclusively** for use in isolated, self-owned, or expl
 
 ---
 
-## ✨ Features
+## ☠️ Features
 
 - 🧠 **Planner** — decomposes high-level goals into executable steps.
 - 🤖 **Sub-agent orchestration** — specialized agents per task (recon, exploit, report, etc.).
@@ -66,7 +66,7 @@ text
 
 ---
 
-## 🚀 Installation
+## ☠️ Installation
 
 ```bash
 # 1. Clone the repository
@@ -119,7 +119,7 @@ Example
 bash
 
 python main.py --mode agent --goal "scan 10.10.10.0/24 and summarize findings"
-
+```
 🎭 Modes
 Mode	Description
 chat	Interactive conversational mode
@@ -165,17 +165,12 @@ BlackKnight/
 
 🗺️ Roadmap
 
-    □
-
     Plugin API for third-party sub-agents
-    □
 
     Web UI for plan inspection
-    □
-
+    
     Exportable HTML/PDF reports
-    □
-
+    
     Multi-target parallel execution
 
 🤝 Contributing
