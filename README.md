@@ -58,6 +58,7 @@ BlackKnight is intended **exclusively** for use in isolated, self-owned, or expl
 
 $ python main.py --mode auto --goal "enumerate open services on 10.10.10.5"
 text
+<img width="1528" height="978" alt="Screenshot_23" src="https://github.com/user-attachments/assets/7bcc5b16-92ab-4de2-aa5e-81d0528e10d9" />
 
 
 ---
