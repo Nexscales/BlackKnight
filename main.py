@@ -39,13 +39,11 @@ RETRYABLE_ERRORS = (
     httpx.RemoteProtocolError,
 )
 
-# Tools allowed before the plan is written.
 PLAN_SAFE_TOOLS = {
     "write_plan", "think", "ask_user", "load_skill",
     "remember", "recall", "forget", "finish", "act_as",
 }
 
-# Obvious chat: greeting-only messages. Route to minimal prompt, no tools.
 _CHAT_HEAD = re.compile(
     r"^\s*(привет|прив|ку|здравствуй|hello|hi|hey|"
     r"как дела|what can you do|что умеешь|кто ты|"
@@ -78,8 +76,6 @@ class BlackKnight:
         self.finish_summary = ""
         self.context_used = 0
         self.context_total = CONTEXT_WINDOW
-
-    # ── difficulty / mode / reset ──
 
     def _apply_difficulty(self, name: str) -> None:
         if not is_valid(name):
@@ -119,7 +115,6 @@ class BlackKnight:
         planner.reset_plan()
         agents.reset_current()
 
-    # ── LLM client per profile ──
     def _client_for(self, profile_name: str):
         if profile_name in self._clients:
             return self._clients[profile_name]
@@ -128,14 +123,13 @@ class BlackKnight:
             base_url=p["base_url"],
             api_key=p["api_key"],
             timeout=httpx.Timeout(
-                p.get("timeout", 60.0),
-                connect=p.get("connect_timeout", 10.0),
+                p.get("timeout", 600.0),
+                connect=p.get("connect_timeout", 600.0),
             ),
             max_retries=0,
         )
         self._clients[profile_name] = c
         return c
-    # ── context management ──
 
     def _trim_messages(self):
         keep_recent = self.preset["trim_keep_recent"]
@@ -160,8 +154,6 @@ class BlackKnight:
         if trimmed:
             log_event("context_trimmed", count=trimmed,
                       kept=keep_recent, mode=self.difficulty)
-
-    # ── LLM ──
 
     def call_llm(self, allow_tools: bool, max_tokens_override=None):
         max_retries = 3
@@ -220,6 +212,9 @@ class BlackKnight:
             )
             self.context_used = total_chars // 3
 
+        # ── real token usage → web UI ──
+        ui.emit_context(self.context_used, self.context_total)
+
         log_event("context", used=self.context_used,
                   total=self.context_total, difficulty=self.difficulty,
                   profile=profile["name"])
@@ -237,8 +232,6 @@ class BlackKnight:
             r"<think>.*?</think>", "", content, flags=re.DOTALL
         ).strip()
         return thought, visible
-
-    # ── one step ──
 
     def step(self, allow_tools: bool, max_tokens_override=None) -> bool:
         self._trim_messages()
@@ -303,7 +296,6 @@ class BlackKnight:
             ui.print_tool_call(name, args)
             t0 = time.time()
 
-            # ── PLAN ENFORCEMENT ──
             if (
                 allow_tools
                 and not planner.is_plan_written()
@@ -327,7 +319,6 @@ class BlackKnight:
                 log_event("ask_user", question=args.get("question", ""),
                           answer=answer)
             elif name == "act_as":
-                # Profile switch: explicit arg > plan's declared profile > stay
                 sub = str(args.get("sub_agent", "")).strip()
                 explicit = str(args.get("profile", "") or "").strip()
                 target = explicit or planner.get_sub_agent_profile(sub)
@@ -367,8 +358,6 @@ class BlackKnight:
 
         return True
 
-    # ── run ──
-
     def run_turn(self, user_input: str) -> None:
         self.task_finished = False
         self.finish_summary = ""
@@ -380,7 +369,6 @@ class BlackKnight:
         log_event("user_message", text=user_input,
                   difficulty=self.difficulty, max_steps=self.max_steps)
 
-        # CHAT PATH: short prompt, no tools, small output
         is_chat = (
             self.mode == "chat"
             or (self.mode == "auto" and _is_obvious_chat(user_input))
@@ -516,6 +504,42 @@ class BlackKnight:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HEADLESS ENTRYPOINT (for web_server.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_task(task: str, mode: str = "agent", difficulty: str = "mid") -> dict:
+    """
+    Run a single task headlessly — no CLI input, no banner, no args parsing.
+    Used by web_server.py. Returns summary info.
+    """
+    agents.init()
+
+    logger = SessionLogger(model=MODEL, mode=mode)
+    SessionLogger.set_current(logger)
+    logger.log("web_run", task=task, mode=mode, difficulty=difficulty)
+
+    agent = BlackKnight(mode=mode, difficulty=difficulty)
+    try:
+        agent.run_turn(task)
+        return {
+            "ok": True,
+            "context_used": agent.context_used,
+            "context_total": agent.context_total,
+            "finished": agent.task_finished,
+            "summary": agent.finish_summary,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "context_used": agent.context_used,
+            "context_total": agent.context_total,
+        }
+    finally:
+        logger.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -542,7 +566,7 @@ def resolve_difficulty(args: argparse.Namespace) -> str:
     if DIFFICULTY_ENV and is_valid(DIFFICULTY_ENV):
         return DIFFICULTY_ENV
     if args.task:
-        return "mid"  # one-shot: never block on stdin
+        return "mid"
     return ui.prompt_difficulty()
 
 
@@ -622,8 +646,6 @@ def handle_command(cmd: str, agent: BlackKnight, logger: SessionLogger) -> bool:
 
 def main() -> None:
     args = parse_args()
-
-    # Init agents BEFORE banner so profile name can be shown
     agents.init()
 
     difficulty = resolve_difficulty(args)

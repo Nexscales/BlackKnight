@@ -1,7 +1,3 @@
-<p align="center">
-  <img width="806" height="153" alt="179267641700b6" src="https://github.com/user-attachments/assets/af16d8a0-d18e-4c17-aef5-3173004b3a0d" />
-</p>
-
 <div align="center">
 
 # ⚔️ BlackKnight
@@ -13,7 +9,6 @@ Black/red terminal UI · plan-first workflow · sub-agent delegation · per-agen
 [Features](#-features) · [Install](#-installation) · [Configure](#-configuration) · [Usage](#-usage) · [Architecture](#-architecture)
 
 </div>
-<img width="1896" height="1014" alt="Screenshot_10" src="https://github.com/user-attachments/assets/5dba954f-1271-450c-8c05-244f16992995" />
 
 ---
 

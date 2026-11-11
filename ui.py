@@ -48,6 +48,51 @@ THEME = Theme({
 
 console = Console(theme=THEME)
 
+# ─── WebSocket bridge ────────────────────────────────────────────────────────
+
+_web_stream_callback = None
+_context_state = None
+WEB_MODE = False
+
+def set_web_stream_callback(cb):
+    global _web_stream_callback
+    _web_stream_callback = cb
+
+def set_context_state(state):
+    global _context_state
+    _context_state = state
+
+def set_web_mode(value: bool):
+    global WEB_MODE
+    WEB_MODE = value
+
+def _emit(event):
+    if _web_stream_callback:
+        _web_stream_callback(event)
+
+def _track(role, content):
+    if _context_state is not None:
+        snap = _context_state.add(role, str(content))
+        _emit({"type": "context", "data": snap})
+
+def emit_context(used: int, total: int):
+    """Real token numbers from LLM usage. Called from main.py after each call."""
+    if _context_state is not None:
+        snap = _context_state.set_real(used, total)
+        _emit({"type": "context", "data": snap})
+    elif _web_stream_callback:
+        # No state object — still emit a minimal snapshot
+        percent = round(used / total * 100, 2) if total else 0
+        _web_stream_callback({"type": "context", "data": {
+            "used": used, "max": total, "percent": percent,
+        }})
+
+def _step():
+    if _context_state is not None:
+        snap = _context_state.step()
+        _emit({"type": "context", "data": snap})
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
@@ -77,7 +122,7 @@ def _profile_name() -> str:
         return "default"
 
 
-# ── banner ──
+# ─── banner ──────────────────────────────────────────────────────────────────
 
 def banner(mode: str, difficulty: str = "mid", max_steps: int = 80) -> Panel:
     art = Text()
@@ -127,7 +172,7 @@ def banner(mode: str, difficulty: str = "mid", max_steps: int = 80) -> Panel:
     )
 
 
-# ── reasoning bar ──
+# ─── reasoning bar ───────────────────────────────────────────────────────────
 
 @contextmanager
 def reasoning_bar(label: str = "reasoning"):
@@ -163,7 +208,7 @@ def reasoning_bar(label: str = "reasoning"):
             t.join(timeout=0.5)
 
 
-# ── context bar ──
+# ─── context bar (CLI) ───────────────────────────────────────────────────────
 
 def context_bar(used: int, total: int, width: int = 20) -> Text:
     pct = min(used / total, 1.0) if total else 0.0
@@ -193,7 +238,7 @@ def print_context_status(used: int, total: int):
     console.print("  ", context_bar(used, total))
 
 
-# ── concise printers ──
+# ─── concise printers ────────────────────────────────────────────────────────
 
 def print_thought(text: str):
     text = text.strip()
@@ -205,9 +250,14 @@ def print_thought(text: str):
         if len(line) > PREVIEW_LINE_LEN:
             line = line[:PREVIEW_LINE_LEN] + "…"
         console.print(f"   [bk.think]{line}[/]")
+    _track("assistant", text)
+    _emit({"type": "thought", "data": text})
 
 
 def print_tool_call(name: str, args: dict):
+    _track("assistant", f"{name} {args}")
+    _emit({"type": "tool_call", "data": {"name": name, "args": args}})
+
     if name == "run_command":
         cmd = str(args.get("command", ""))
         if len(cmd) > PREVIEW_LINE_LEN:
@@ -325,6 +375,12 @@ def _tool_result_summary(name: str, result: str):
 
 
 def print_tool_result(name: str, result: str, elapsed: float):
+    _track("tool", result)
+    _emit({"type": "tool_result", "data": {
+        "name": name, "elapsed": round(elapsed, 2),
+        "result": (result or "")[:4000],
+    }})
+
     status, data = _tool_result_summary(name, result)
     console.print(
         f"[bk.muted]\\[{ts()}][/] [bk.result]✓[/] {name}  "
@@ -365,6 +421,8 @@ def print_tool_result(name: str, result: str, elapsed: float):
 def print_chat(text: str):
     if not text.strip():
         return
+    _track("assistant", text)
+    _emit({"type": "assistant", "data": text})
     console.print()
     console.print(f"[bk.muted]\\[{ts()}][/] [bk.accent]▸ blackknight[/]")
     console.print(Panel(
@@ -376,6 +434,8 @@ def print_chat(text: str):
 def print_final(text: str):
     if not text.strip():
         return
+    _track("assistant", text)
+    _emit({"type": "final", "data": text})
     console.print()
     console.print(Rule(style="bk.dim"))
     body = text
@@ -396,6 +456,8 @@ def print_final(text: str):
 def print_done(summary: str):
     if not summary.strip():
         return
+    _track("assistant", summary)
+    _emit({"type": "done", "data": summary})
     console.print()
     console.print(Panel(
         Markdown(summary),
@@ -406,6 +468,7 @@ def print_done(summary: str):
 
 
 def print_flag(flag: str):
+    _emit({"type": "flag", "data": flag})
     console.print()
     console.print(Panel(
         Text(f"FLAG CAPTURED: {flag}", style="bk.flag"),
@@ -414,18 +477,29 @@ def print_flag(flag: str):
 
 
 def print_error(text: str):
+    _emit({"type": "error", "data": text})
     console.print(f"[bk.error]\\[{ts()}] {text}[/]")
 
 
 def print_step(i: int, max_steps: int = 80):
     console.print(f"[bk.dim]\\[{ts()}] step {i+1}/{max_steps}[/]")
+    _step()
 
 
 def prompt_user_input() -> str:
+    if WEB_MODE:
+        return ""
     return console.input(f"\n[bk.user]\\[{ts()}] you[/] [bk.accent]▸[/] ").strip()
 
 
 def prompt_ask_user(question: str, context: str = "") -> str:
+    # Web mode: auto-answer instead of blocking on stdin
+    if WEB_MODE:
+        _emit({"type": "ask_user", "data": {"question": question, "context": context}})
+        console.print(f"[bk.ask]\\[{ts()}] ask_user (web): {question}[/]")
+        console.print("[bk.muted]  → auto-proceed with best judgment[/]")
+        return "(web mode: proceeding with best judgment — no interactive user)"
+
     console.print()
     body = Text()
     if context:
@@ -441,7 +515,7 @@ def prompt_ask_user(question: str, context: str = "") -> str:
     return console.input(f"[bk.ask]\\[{ts()}] your answer[/] [bk.accent]▸[/] ").strip()
 
 
-# ── commands for inspecting the log ──
+# ─── commands for inspecting the log ────────────────────────────────────────
 
 def print_log_path(path):
     console.print(f"[bk.muted]current log:[/] [bk.accent]{path}[/]")
@@ -496,7 +570,7 @@ def print_last_tool_result(path):
     console.print("[bk.muted]no tool results yet.[/]")
 
 
-# ── difficulty selection ──
+# ─── difficulty selection ───────────────────────────────────────────────────
 
 def print_difficulty_menu() -> None:
     console.print()
@@ -519,13 +593,19 @@ def prompt_difficulty() -> str:
     return from_choice(ans or "2")
 
 
-# ── plan / sub-agent / profile printers ──
+# ─── plan / sub-agent / profile printers ────────────────────────────────────
 
 def print_plan(result: dict) -> None:
     md = result.get("markdown", "")
     path = result.get("path", "")
     n_sa = result.get("sub_agent_count", 0)
     n_st = result.get("step_count", 0)
+    _emit({"type": "plan", "data": {
+        "markdown": md[:3000],
+        "path": path,
+        "sub_agents": n_sa,
+        "steps": n_st,
+    }})
     console.print()
     console.print(
         f"[bk.muted]\\[{ts()}][/] [bk.accent]◆ plan written[/]  "
@@ -542,6 +622,7 @@ def print_plan(result: dict) -> None:
 
 
 def print_sub_agent(name: str, focus: str) -> None:
+    _emit({"type": "sub_agent", "data": {"name": name, "focus": focus}})
     console.print()
     console.print(
         f"[bk.muted]\\[{ts()}][/] [bk.accent]◆ sub-agent: {name}[/]"
@@ -550,6 +631,7 @@ def print_sub_agent(name: str, focus: str) -> None:
 
 
 def print_profile(name: str, model: str) -> None:
+    _emit({"type": "profile", "data": {"name": name, "model": model}})
     console.print()
     console.print(
         f"[bk.muted]\\[{ts()}][/] [bk.accent]◆ profile: {name}[/]  "

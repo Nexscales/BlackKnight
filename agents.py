@@ -77,12 +77,12 @@ def _resolve_one(name: str, raw: dict, default_resolved: dict) -> dict:
     timeout = _float_or(
         raw.get("timeout"),
         pfx + "_TIMEOUT",
-        default_resolved.get("timeout", 60.0) if name != "default" else 60.0,
+        default_resolved.get("timeout", 600.0) if name != "default" else 600.0,
     )
     connect_timeout = _float_or(
         raw.get("connect_timeout"),
         pfx + "_CONNECT_TIMEOUT",
-        default_resolved.get("connect_timeout", 10.0) if name != "default" else 10.0,
+        default_resolved.get("connect_timeout", 600.0) if name != "default" else 600.0,
     )
 
     return {
@@ -105,7 +105,7 @@ def init() -> None:
         "default",
         data["profiles"].get("default", {}),
         {"base_url": BASE_URL, "model": MODEL, "api_key": API_KEY,
-         "timeout": 60.0, "connect_timeout": 10.0},
+         "timeout": 600.0, "connect_timeout": 600.0},
     )
     default_resolved["base_url"] = default_resolved["base_url"] or BASE_URL
     default_resolved["model"]    = default_resolved["model"]    or MODEL

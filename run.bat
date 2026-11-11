@@ -1,15 +1,8 @@
 @echo off
 setlocal EnableDelayedExpansion
 title BlackKnight
-
-REM ─────────────────────────────────────────────────────────────
-REM  BlackKnight launcher
-REM  Launches main.py in a separate window, then closes.
-REM ─────────────────────────────────────────────────────────────
-
 cd /d "%~dp0"
 
-REM ── ANSI colors ──
 for /F %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
 set "RED=%ESC%[91m"
 set "DIM=%ESC%[90m"
@@ -21,58 +14,39 @@ echo %RED%  B L A C K  K N I G H T  %RST%
 echo %DIM%  launcher%RST%
 echo.
 
-REM ── CHECK: Python ──
+REM ── Find Python ──
+set "PY="
 where python >nul 2>nul
-if errorlevel 1 (
+if not errorlevel 1 set "PY=python"
+if not defined PY (
+    where py >nul 2>nul
+    if not errorlevel 1 set "PY=py -3"
+)
+if not defined PY (
     echo %RED%[x]%RST% python not found in PATH.
     pause
     exit /b 1
 )
 
-REM ── CHECK: main.py ──
-if not exist "main.py" (
-    echo %RED%[x]%RST% main.py not found in %CD%
+echo %DIM%[i]%RST% python : %PY%
+echo %DIM%[i]%RST% folder : %CD%
+echo.
+
+REM ── Quick import check (silent on success) ──
+%PY% -c "import openai, rich, httpx, dotenv, requests, bs4" >nul 2>nul
+if errorlevel 1 (
+    echo %RED%[x]%RST% some packages are missing.
+    echo     Run:  %PY% -m pip install -r requirements.txt
+    echo     Or:   %PY% -m pip install openai rich httpx python-dotenv requests beautifulsoup4
     pause
     exit /b 1
 )
 
-REM ── CHECK: .env present? (config.py validates the key) ──
-if not exist ".env" (
-    echo %DIM%[i]%RST% .env not found — falling back to environment variables.
-    echo     Copy .env.example to .env and fill in BK_API_KEY.
-    echo.
-)
-
-REM ── CHECK + INSTALL: dependencies (pkg:import) ──
-echo %DIM%[i]%RST% checking dependencies...
+REM ── Launch ──
+echo %GRN%[ok]%RST% launching BlackKnight CLI in a new window...
 echo.
+start "BlackKnight" cmd /k "%PY% main.py %*"
 
-set "PKGS=openai:openai rich:rich requests:requests beautifulsoup4:bs4 httpx:httpx python-dotenv:dotenv"
-
-for %%p in (%PKGS%) do (
-    for /f "tokens=1,2 delims=:" %%a in ("%%p") do (
-        python -c "import %%b" >nul 2>nul
-        if errorlevel 1 (
-            echo   %DIM%install %%a...%RST%
-            python -m pip install --quiet --disable-pip-version-check %%a >nul 2>nul
-            if errorlevel 1 (
-                echo   %RED%[x]%RST% failed to install %%a
-                pause
-                exit /b 1
-            )
-            echo   %GRN%ok%RST% %%a
-        ) else (
-            echo   %GRN%ok%RST% %%a
-        )
-    )
-)
-
-echo.
-
-REM ── RUN: separate window, close this one ──
-echo %GRN%[ok]%RST% launching BlackKnight in a new window...
-timeout /t 1 /nobreak >nul
-start "BlackKnight" cmd /k python main.py %*
-
-endlocal
+echo %GRN%[ok]%RST% launcher done. This window closes in 2s.
+timeout /t 2 /nobreak >nul
 exit /b 0

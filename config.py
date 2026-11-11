@@ -66,8 +66,8 @@ SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_OUTPUT      = 30000
 MAX_FILE_SIZE   = 5_000_000
-DEFAULT_TIMEOUT = 60
-MAX_TIMEOUT     = 120
+DEFAULT_TIMEOUT = 1800
+MAX_TIMEOUT     = 2600
 
 LOGS_DIR = Path(os.getenv("BK_LOGS_DIR", "./logs")).resolve()
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
