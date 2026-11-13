@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import MODEL, CONTEXT_WINDOW, BASE_URL
 import ui
+import main as bk_main
 from main import run_task
 import sys as _sys, os as _os
 _os.environ["PYTHONUTF8"] = "1"
@@ -27,19 +28,24 @@ for _s in (_sys.stdout, _sys.stderr):
     except Exception:
         pass
         
-HOST = os.environ.get("BK_HOST", "127.0.0.1")   # не светим агент в локалку
-PORT = int(os.environ.get("BK_PORT", "8080"))    # батник передаёт BK_PORT
+HOST = os.environ.get("BK_HOST", "127.0.0.1")   # do not expose the agent to the internet
+PORT = int(os.environ.get("BK_PORT", "8080"))    # launch arg overrides BK_PORT
 MODES = {"auto", "chat", "agent", "dev"}
 DIFFS = {"easy", "mid", "hard", "hell"}
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 
 
 def detect_provider(model: str, base_url: str) -> str:
     s = (model + " " + base_url).lower()
     if "openrouter" in s: return "openrouter"
+    if "anymodel" in s: return "anymodel"
     if "deepseek" in s: return "deepseek"
     if "anthropic" in s or "claude" in s: return "anthropic"
     if "gemini" in s or "generativelanguage" in s: return "google"
     if "localhost" in s or "127.0.0.1" in s or "11434" in s: return "local"
+    if "glm" in s or "zhipu" in s or "bigmodel" in s: return "zhipu"
     if "openai" in s or "gpt" in s: return "openai"
     return "unknown"
 
@@ -97,6 +103,34 @@ class ContextState:
 
 STATE = ContextState(CONTEXT_WINDOW)
 
+# ── server-authoritative session state ──────────────────────────────────────
+# The mode/difficulty used to live ONLY in each browser tab (localStorage),
+# so the desktop window and the web tab disagreed and every task ran with
+# whichever client started it. Now the server owns one session state:
+#   * set_mode / set_difficulty messages update it and broadcast to ALL
+#     connected clients (desktop + browser tabs stay in sync);
+#   * a freshly connected client receives the current state on connect;
+#   * start_task falls back to this state and echoes the effective mode.
+SESSION = {"mode": "agent", "difficulty": "mid"}
+
+
+def _session_state() -> dict:
+    return {"mode": SESSION["mode"], "difficulty": SESSION["difficulty"]}
+
+
+def _apply_session_mode(mode: str | None) -> bool:
+    if mode and mode in MODES and mode != SESSION["mode"]:
+        SESSION["mode"] = mode
+        return True
+    return False
+
+
+def _apply_session_diff(diff: str | None) -> bool:
+    if diff and diff in DIFFS and diff != SESSION["difficulty"]:
+        SESSION["difficulty"] = diff
+        return True
+    return False
+
 
 class Manager:
     def __init__(self):
@@ -151,14 +185,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="BlackKnight Web", lifespan=lifespan)
-Path("static").mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    # no-store: браузер не подсунет старую версию интерфейса
-    return HTMLResponse(Path("static/index.html").read_text(encoding="utf-8"),
+    # no-store: always ship the latest UI to the browser
+    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"),
                         headers={"Cache-Control": "no-store"})
 
 
@@ -170,7 +204,19 @@ async def api_info():
 @app.get("/api/state")
 async def api_state():
     return {"model": _model_info(), "context": STATE.snapshot(),
+            "session": _session_state(),
             "running": _ACTIVE != 0 and _ACTIVE == _RUN_ID}
+
+
+@app.get("/api/profiles")
+async def api_profiles():
+    import agents as _agents
+    try:
+        _agents.init()
+        return {"profiles": _agents.list_names(),
+                "active": _agents.current_name()}
+    except Exception as e:
+        return {"profiles": ["default"], "active": "default", "error": str(e)}
 
 
 def _ui_hooks(rid: int):
@@ -190,6 +236,7 @@ async def run_agent_task(task: str, mode: str, difficulty: str, rid: int):
     global _ACTIVE
     STATE.reset()
     _ui_hooks(rid)
+    await manager.broadcast({"type": "session_state", "data": _session_state()})
     await manager.broadcast({"type": "context", "data": STATE.snapshot()})
     await manager.broadcast({"type": "model_info", "data": _model_info()})
     await manager.broadcast({"type": "task_start",
@@ -216,10 +263,21 @@ async def ws_endpoint(ws: WebSocket):
     try:
         await ws.send_text(json.dumps({"type": "model_info", "data": _model_info()}))
         await ws.send_text(json.dumps({"type": "context", "data": STATE.snapshot()}))
+        await ws.send_text(json.dumps({"type": "session_state",
+                                       "data": _session_state()}))
         await ws.send_text(json.dumps({"type": "status", "data": {
             "running": _ACTIVE != 0 and _ACTIVE == _RUN_ID}}))
         while True:
-            payload = json.loads(await ws.receive_text())
+            try:
+                payload = json.loads(await ws.receive_text())
+            except json.JSONDecodeError:
+                await ws.send_text(json.dumps({
+                    "type": "error", "data": "invalid JSON message"}))
+                continue
+            if not isinstance(payload, dict):
+                await ws.send_text(json.dumps({
+                    "type": "error", "data": "message must be a JSON object"}))
+                continue
             t = payload.get("type")
 
             if t == "start_task":
@@ -231,24 +289,64 @@ async def ws_endpoint(ws: WebSocket):
                 task = str(payload.get("task", "")).strip()
                 if not task:
                     continue
-                mode = payload.get("mode", "agent")
-                mode = mode if mode in MODES else "agent"
-                diff = payload.get("difficulty", "mid")
-                diff = diff if diff in DIFFS else "mid"
+                # Server-authoritative mode: a client with a stale local
+                # selection cannot override what the operator picked in
+                # another window; omitted/invalid fields fall back to the
+                # session state. The effective values are echoed back.
+                mode = payload.get("mode") or SESSION["mode"]
+                mode = mode if mode in MODES else SESSION["mode"]
+                diff = payload.get("difficulty") or SESSION["difficulty"]
+                diff = diff if diff in DIFFS else SESSION["difficulty"]
+                # persist the effective choice so every connected client
+                # sees the same mode/difficulty from now on
+                SESSION["mode"] = mode
+                SESSION["difficulty"] = diff
+                await manager.broadcast({"type": "session_state",
+                                         "data": _session_state()})
                 _RUN_ID += 1
                 _ACTIVE = _RUN_ID
+                bk_main.clear_cancel()
                 asyncio.create_task(run_agent_task(task, mode, diff, _RUN_ID))
+
+            elif t == "set_mode":
+                if _apply_session_mode(str(payload.get("mode") or "")):
+                    await manager.broadcast({"type": "session_state",
+                                             "data": _session_state()})
+
+            elif t == "set_difficulty":
+                if _apply_session_diff(str(payload.get("difficulty") or "")):
+                    await manager.broadcast({"type": "session_state",
+                                             "data": _session_state()})
+
+            elif t == "get_state":
+                await ws.send_text(json.dumps({"type": "session_state",
+                                               "data": _session_state()}))
+
+            elif t == "profiles":
+                import agents as _agents
+                try:
+                    _agents.init()
+                    await ws.send_text(json.dumps({
+                        "type": "profiles",
+                        "data": {"profiles": _agents.list_names(),
+                                 "active": _agents.current_name()},
+                    }))
+                except Exception as e:
+                    await ws.send_text(json.dumps({
+                        "type": "error", "data": f"profiles failed: {e}"}))
 
             elif t == "stop":
                 # Мягкий abort: глушим события и освобождаем UI.
                 # Поток в песочнице доработает сам (таймауты sandbox.py),
                 # новый запуск не начнётся, пока он жив — без двух агентов сразу.
                 if _ACTIVE:
-                    _RUN_ID += 1
+                    # Cooperative abort: the agent stops at the next step.
+                    # The run itself broadcasts task_result + done, so the
+                    # UI stays in "running" until the thread really ends.
+                    bk_main.request_cancel()
                     await manager.broadcast({"type": "log", "data": {
                         "level": "warn",
-                        "text": "abort: UI detached — sandbox process finishes on its own"}})
-                    await manager.broadcast({"type": "done", "data": True})
+                        "text": "abort requested - stopping at the next step"}})
 
             elif t == "reset":
                 STATE.reset()

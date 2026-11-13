@@ -199,13 +199,14 @@ def main():
             server.should_exit = True
 
     except Exception as e:
-        Path("desktop_error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        err_log = Path(__file__).resolve().parent / "desktop_error.log"
+        err_log.write_text(traceback.format_exc(), encoding="utf-8")
         _msgbox(
             "Cannot create BlackKnight desktop window.\n\n"
             "On Windows, install Microsoft Edge WebView2 Runtime:\n"
             "https://developer.microsoft.com/microsoft-edge/webview2/\n\n"
             f"Error: {e}\n"
-            "Details: desktop_error.log"
+            f"Details: {err_log}"
         )
         if server:
             server.should_exit = True

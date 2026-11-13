@@ -32,6 +32,7 @@ _CTX = {
     "plan_written": False,
     "plan_path": "",
     "sub_agents": [],
+    "research_calls": 0,
 }
 
 
@@ -49,6 +50,14 @@ def reset_plan() -> None:
     _CTX["plan_written"] = False
     _CTX["plan_path"] = ""
     _CTX["sub_agents"] = []
+    _CTX["research_calls"] = 0
+
+def note_research_call() -> int:
+    _CTX["research_calls"] = int(_CTX.get("research_calls", 0)) + 1
+    return _CTX["research_calls"]
+
+def research_calls() -> int:
+    return int(_CTX.get("research_calls", 0))
 
 
 def is_plan_written() -> bool:
@@ -153,6 +162,40 @@ def write_plan(
     from difficulty import get_preset
     from agents import exists as profile_exists, list_names as profile_names
 
+    # ── normalize model output: models sometimes send a string instead of
+    #    an array, or null. Never let that crash act_as / the plan writer. ──
+    if isinstance(sub_agents, str):
+        sub_agents = [{"name": "agent-1", "role": sub_agents}]
+    elif not isinstance(sub_agents, (list, tuple)):
+        sub_agents = []
+    else:
+        sub_agents = list(sub_agents)
+
+    clean_agents = []
+    for i, sa in enumerate(sub_agents, 1):
+        if not isinstance(sa, dict):
+            clean_agents.append({"name": str(sa or "agent-" + str(i)),
+                                 "role": "", "profile": ""})
+            continue
+        clean_agents.append({
+            "name": str(sa.get("name", "agent-" + str(i))).strip()
+                    or "agent-" + str(i),
+            "role": str(sa.get("role", "")).strip(),
+            "tools": sa.get("tools") or [],
+            "output": str(sa.get("output", "")).strip(),
+            "profile": str(sa.get("profile", "") or "").strip(),
+        })
+    sub_agents = clean_agents
+
+    if isinstance(steps, str):
+        steps = [steps]
+    elif not isinstance(steps, (list, tuple)):
+        steps = []
+    else:
+        steps = [str(s) for s in steps]
+
+    success_criteria = success_criteria if isinstance(success_criteria, str) else ""
+
     max_sa = get_preset(difficulty).get("plan_max_sub_agents", 5)
     if len(sub_agents) > max_sa:
         return {
@@ -166,8 +209,6 @@ def write_plan(
 
     # validate profile names against the resolved set
     for sa in sub_agents:
-        if not isinstance(sa, dict):
-            continue
         prof = str(sa.get("profile", "") or "")
         if prof and not profile_exists(prof):
             return {
@@ -197,6 +238,13 @@ def write_plan(
         "ok": True,
         "path": str(path),
         "abs_path": str(path.resolve()),
+        "objective": objective,
+        "sub_agents": [
+            {"name": sa.get("name", ""), "role": sa.get("role", ""),
+             "profile": sa.get("profile", "")}
+            for sa in sub_agents
+        ],
+        "steps": list(steps),
         "sub_agent_count": len(sub_agents),
         "step_count": len(steps),
         "markdown": md,

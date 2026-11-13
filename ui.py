@@ -1,9 +1,9 @@
 """
-BlackKnight - CLI rendering.
+BlackKnight - CLI rendering (opencode-style).
 Console: concise. Full detail: ./logs/session_*.jsonl.
 """
 
-import math
+import itertools
 import threading
 import time
 from contextlib import contextmanager
@@ -12,6 +12,7 @@ from datetime import datetime
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.text import Text
 from rich.live import Live
 from rich.rule import Rule
@@ -33,6 +34,7 @@ PREVIEW_LINES       = 3
 PREVIEW_LINE_LEN    = 110
 FINAL_MAX_LINES     = 40
 PLAN_PREVIEW_LINES  = 30
+VERSION             = "2.2.0"
 
 
 THEME = Theme({
@@ -51,6 +53,7 @@ THEME = Theme({
     "bk.empt":   "grey19",
     "bk.ok":     "green",
     "bk.warn":   "yellow",
+    "bk.dash":   "grey27",
 })
 
 console = Console(theme=THEME)
@@ -132,78 +135,70 @@ def _profile_name() -> str:
 # ─── banner ──────────────────────────────────────────────────────────────────
 
 def banner(mode: str, difficulty: str = "mid", max_steps: int = 80) -> Panel:
-    art = Text()
-    art.append(">>>  ", style="bk.brand")
-    art.append("B L A C K", style="bold red")
-    art.append("  K N I G H T", style="bold bright_red")
-    art.append("  <<<", style="bk.brand")
-
-    sub = Text("autonomous offensive security agent", style="bk.muted")
+    head = Text()
+    head.append(" ⬢ ", style="bk.brand")
+    head.append("BlackKnight", style="bold white")
+    head.append("  v" + VERSION, style="bk.dim")
+    head.append("  ·  ", style="bk.dim")
+    head.append("autonomous offensive security agent", style="bk.muted")
 
     meta = Text()
-    meta.append("model  ", style="bk.muted"); meta.append(MODEL, style="bk.accent")
-    meta.append("   ctx  ", style="bk.muted"); meta.append(_fmt_tokens(CONTEXT_WINDOW), style="bk.accent")
-    meta.append("   steps  ", style="bk.muted"); meta.append(str(max_steps), style="bk.accent")
-    meta.append("   mode  ", style="bk.muted"); meta.append(mode, style="bk.accent")
-    meta.append("   diff  ", style="bk.muted"); meta.append(difficulty, style="bk.accent")
-    meta.append("   profile  ", style="bk.muted"); meta.append(_profile_name(), style="bk.accent")
+    meta.append("model ", style="bk.muted")
+    meta.append(MODEL, style="bk.accent")
+    meta.append("   ctx ", style="bk.muted")
+    meta.append(_fmt_tokens(CONTEXT_WINDOW), style="bk.accent")
+    meta.append("   steps ", style="bk.muted")
+    meta.append(str(max_steps), style="bk.accent")
+    meta.append("   mode ", style="bk.muted")
+    meta.append(mode, style="bk.accent")
+    meta.append("   diff ", style="bk.muted")
+    meta.append(difficulty, style="bk.accent")
+    meta.append("   profile ", style="bk.muted")
+    meta.append(_profile_name(), style="bk.accent")
 
     hint = Text()
-    hint.append("modes  ", style="bk.muted")
-    hint.append(":auto", style="bright_red"); hint.append("  ", style="")
-    hint.append(":chat", style="white"); hint.append("  ", style="")
-    hint.append(":agent", style="bright_red")
-    hint.append("     diff  ", style="bk.muted")
-    hint.append(":diff easy|mid|hard|hell", style="bk.accent")
-    hint.append("     profile  ", style="bk.muted")
-    hint.append(":profiles", style="bk.accent"); hint.append("  ", style="")
-    hint.append(":profile <name>", style="bk.accent")
-    hint.append("     cmds  ", style="bk.muted")
-    hint.append(":reset", style="bk.accent"); hint.append("  ", style="")
-    hint.append(":log", style="bk.accent"); hint.append("  ", style="")
-    hint.append(":last", style="bk.accent"); hint.append("  ", style="")
-    hint.append(":tail", style="bk.accent"); hint.append("  ", style="")
-    hint.append(":exit", style="bk.accent")
+    hint.append(":auto :chat :agent :dev", style="bk.dim")
+    hint.append("   :diff easy|mid|hard|hell", style="bk.dim")
+    hint.append("   :profiles", style="bk.dim")
+    hint.append("   :reset :log :last :tail", style="bk.dim")
+    hint.append("   :exit", style="bk.dim")
 
     ex = Text()
     ex.append("try  ", style="bk.muted")
     ex.append("\"привет\"", style="white")
-    ex.append("   ", style="")
-    ex.append("·", style="bk.dim")
-    ex.append("   ", style="")
+    ex.append("   ·   ", style="bk.dim")
     ex.append("\"scan 10.10.10.5 with nmap\"", style="bright_red")
 
     return Panel(
-        Group(art, sub, Text(""), meta, Text(""), hint, Text(""), ex),
-        box=ROUNDED, border_style="bk.brand", padding=(1, 2),
+        Group(head, meta, Text(""), hint, ex),
+        box=ROUNDED, border_style="bk.dash", padding=(0, 1),
     )
 
 
 # ─── reasoning bar ───────────────────────────────────────────────────────────
 
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_STEP_LABEL = ""
+
+
 @contextmanager
-def reasoning_bar(label: str = "reasoning"):
+def reasoning_bar(label: str = "thinking"):
     stop = threading.Event()
     start = time.time()
-    width = 44
+    frames = itertools.cycle(_SPINNER_FRAMES)
 
     def render():
         while not stop.is_set():
             elapsed = time.time() - start
-            pos = int((math.sin(elapsed * 4.0) + 1) / 2 * (width - 4))
-            bar = Text()
-            bar.append("─" * pos, style="bk.empt")
-            bar.append("---", style="bk.pulse")
-            bar.append("─" * (width - pos - 3), style="bk.empt")
-
             line = Text()
-            line.append("  ▸ ", style="bk.accent")
-            line.append(label + " ", style="bk.think")
-            line.append_text(bar)
-            line.append(f"  {elapsed:5.1f}s", style="bk.muted")
-
+            line.append("  ", style="")
+            line.append(next(frames), style="bk.accent")
+            line.append(" " + label, style="bk.think")
+            if _STEP_LABEL:
+                line.append("  " + _STEP_LABEL, style="bk.dim")
+            line.append(f"  {elapsed:4.1f}s", style="bk.dim")
             live.update(line)
-            time.sleep(0.05)
+            time.sleep(0.09)
 
     with Live(console=console, refresh_per_second=24, transient=True) as live:
         t = threading.Thread(target=render, daemon=True)
@@ -231,9 +226,10 @@ def context_bar(used: int, total: int, width: int = 20) -> Text:
         color = "red"
 
     bar = Text()
+    bar.append("ctx ", style="bk.muted")
     bar.append("█" * filled, style=color)
     bar.append("░" * (width - filled), style="grey27")
-    bar.append(f"  {pct*100:5.1f}%", style="grey62")
+    bar.append(f" {pct*100:4.1f}%", style="grey62")
     bar.append(f"  {_fmt_tokens(used)}/{_fmt_tokens(total)}", style="grey37")
     return bar
 
@@ -252,7 +248,7 @@ def print_thought(text: str):
     if not text:
         return
     console.print()
-    console.print(f"[bk.muted]\\[{ts()}][/] [bk.think]● thinking[/]")
+    console.print(f"[bk.dim]\\[{ts()}][/] [bk.think]● thinking[/]")
     for line in text.splitlines()[:6]:
         if len(line) > PREVIEW_LINE_LEN:
             line = line[:PREVIEW_LINE_LEN] + "…"
@@ -265,21 +261,20 @@ def print_tool_call(name: str, args: dict):
     _track("assistant", f"{name} {args}")
     _emit({"type": "tool_call", "data": {"name": name, "args": args}})
 
-    if name == "run_command":
-        cmd = str(args.get("command", ""))
-        if len(cmd) > PREVIEW_LINE_LEN:
-            cmd = cmd[:PREVIEW_LINE_LEN] + "…"
-        console.print()
-        console.print(f"[bk.muted]\\[{ts()}][/] [bk.tool]▸ {name}[/]  [bk.dim]{cmd}[/]")
-        return
+    preview = ""
+    for k in ("command", "objective", "sub_agent", "path", "code",
+              "name", "question", "summary", "key", "query", "reasoning"):
+        if k in args:
+            preview = str(args[k])
+            break
+    if len(preview) > PREVIEW_LINE_LEN:
+        preview = preview[:PREVIEW_LINE_LEN] + "…"
 
-    if name == "write_plan":
-        obj = str(args.get("objective", ""))
-        if len(obj) > PREVIEW_LINE_LEN:
-            obj = obj[:PREVIEW_LINE_LEN] + "…"
-        console.print()
-        console.print(f"[bk.muted]\\[{ts()}][/] [bk.tool]▸ {name}[/]  [bk.dim]{obj}[/]")
-        return
+    console.print()
+    line = f"[bk.muted]\\[{ts()}][/] [bk.accent]▸[/] [bold white]{name}[/]"
+    if preview:
+        line += f"  [bk.dim]{preview}[/]"
+    console.print(line)
 
     if name == "act_as":
         sa = str(args.get("sub_agent", "?"))
@@ -287,22 +282,6 @@ def print_tool_call(name: str, args: dict):
         if len(focus) > 80:
             focus = focus[:80] + "…"
         print_sub_agent(sa, focus)
-        return
-
-    if name in ("load_skill", "ask_user", "finish", "think", "remember", "recall"):
-        preview = ""
-        for k in ("name", "question", "summary", "key", "query"):
-            if k in args:
-                preview = str(args[k])
-                break
-        if len(preview) > PREVIEW_LINE_LEN:
-            preview = preview[:PREVIEW_LINE_LEN] + "…"
-        console.print()
-        console.print(f"[bk.muted]\\[{ts()}][/] [bk.tool]▸ {name}[/]  [bk.dim]{preview}[/]")
-        return
-
-    console.print()
-    console.print(f"[bk.muted]\\[{ts()}][/] [bk.tool]▸ {name}[/]")
 
 
 def _tool_result_summary(name: str, result: str):
@@ -338,6 +317,9 @@ def _tool_result_summary(name: str, result: str):
         return f"[bk.ok]wrote {data.get('path')}[/]  {_human_size(data.get('bytes', 0))}", data
 
     if name == "read_file":
+        content = data.get("content")
+        if isinstance(content, str):
+            return f"[bk.ok]read {data.get('path')}[/]  {_human_size(len(content))}", data
         return f"[bk.ok]read {data.get('path')}[/]  {size}", data
 
     if name == "load_skill":
@@ -389,8 +371,10 @@ def print_tool_result(name: str, result: str, elapsed: float):
     }})
 
     status, data = _tool_result_summary(name, result)
+    failed = isinstance(data, dict) and (data.get("error") or data.get("ok") is False)
+    mark = "[bk.error]✗[/]" if failed else "[bk.ok]✓[/]"
     console.print(
-        f"[bk.muted]\\[{ts()}][/] [bk.result]✓[/] {name}  "
+        f"[bk.muted]\\[{ts()}][/] {mark} [bold]{name}[/] "
         f"[bk.dim]({elapsed:.2f}s)[/]  {status}"
     )
 
@@ -429,13 +413,10 @@ def print_chat(text: str):
     if not text.strip():
         return
     _track("assistant", text)
-    _emit({"type": "assistant", "data": text})
+    _emit({"type": "chat", "data": text})
     console.print()
-    console.print(f"[bk.muted]\\[{ts()}][/] [bk.accent]▸ blackknight[/]")
-    console.print(Panel(
-        Markdown(text),
-        box=ROUNDED, border_style="bk.accent", padding=(0, 1),
-    ))
+    console.print(f"[bk.muted]\\[{ts()}][/] [bold white]●[/] [bk.accent]blackknight[/]")
+    console.print(Padding(Markdown(text), (0, 2)))
 
 
 def print_final(text: str):
@@ -444,7 +425,7 @@ def print_final(text: str):
     _track("assistant", text)
     _emit({"type": "final", "data": text})
     console.print()
-    console.print(Rule(style="bk.dim"))
+    console.print(Rule(style="bk.dash"))
     body = text
     lines = body.splitlines()
     if len(lines) > FINAL_MAX_LINES:
@@ -452,12 +433,8 @@ def print_final(text: str):
             "\n".join(lines[:FINAL_MAX_LINES])
             + f"\n\n… (+{len(lines)-FINAL_MAX_LINES} lines, see :log)"
         )
-    console.print(Panel(
-        Markdown(body),
-        title="[bk.accent]final[/]",
-        title_align="left",
-        box=ROUNDED, border_style="bk.dim", padding=(0, 1),
-    ))
+    console.print(f"[bold white]●[/] [bk.accent]blackknight[/]")
+    console.print(Padding(Markdown(body), (0, 2)))
 
 
 def print_done(summary: str):
@@ -466,37 +443,36 @@ def print_done(summary: str):
     _track("assistant", summary)
     _emit({"type": "done", "data": summary})
     console.print()
-    console.print(Panel(
-        Markdown(summary),
-        title="[bk.accent]done[/]",
-        title_align="left",
-        box=ROUNDED, border_style="bk.dim", padding=(0, 1),
-    ))
+    console.print(f"[bk.muted]\\[{ts()}][/] [bk.ok]▪ done[/]")
+    console.print(Padding(Markdown(summary), (0, 2)))
 
 
 def print_flag(flag: str):
     _emit({"type": "flag", "data": flag})
     console.print()
     console.print(Panel(
-        Text(f"FLAG CAPTURED: {flag}", style="bk.flag"),
+        Text("🚩  FLAG CAPTURED: " + flag, style="bk.flag"),
         box=HEAVY, border_style="bk.accent", padding=(1, 2),
     ))
 
 
 def print_error(text: str):
     _emit({"type": "error", "data": text})
-    console.print(f"[bk.error]\\[{ts()}] {text}[/]")
+    console.print(f"[bk.error]\\[{ts()}] ✗ {text}[/]")
 
 
 def print_step(i: int, max_steps: int = 80):
-    console.print(f"[bk.dim]\\[{ts()}] step {i+1}/{max_steps}[/]")
+    global _STEP_LABEL
+    _STEP_LABEL = f"step {i+1}/{max_steps}"
     _step()
+    _emit({"type": "step", "data": {"i": i + 1, "max": max_steps}})
 
 
 def prompt_user_input() -> str:
     if WEB_MODE:
         return ""
-    return console.input(f"\n[bk.user]\\[{ts()}] you[/] [bk.accent]▸[/] ").strip()
+    console.print()
+    return console.input(f"[bk.accent]▸[/] ").strip()
 
 
 def prompt_ask_user(question: str, context: str = "") -> str:
@@ -513,13 +489,10 @@ def prompt_ask_user(question: str, context: str = "") -> str:
         body.append("context: ", style="bk.muted")
         body.append(context + "\n\n", style="bk.dim")
     body.append(question, style="white")
-    console.print(Panel(
-        body,
-        title="[bk.ask]agent asks[/]",
-        title_align="left",
-        box=ROUNDED, border_style="bk.ask", padding=(1, 2),
-    ))
-    return console.input(f"[bk.ask]\\[{ts()}] your answer[/] [bk.accent]▸[/] ").strip()
+    console.print(Padding(body, (0, 0)))
+    return console.input(
+        f"[bk.ask]? your answer[/] [bk.accent]▸[/] "
+    ).strip()
 
 
 # ─── commands for inspecting the log ────────────────────────────────────────
@@ -593,7 +566,7 @@ def prompt_difficulty() -> str:
     print_difficulty_menu()
     try:
         ans = console.input(
-            f"\n[bk.accent]select[/] [bk.muted](1-4, default=2)[/] ▸ "
+            f"[bk.accent]select[/] [bk.muted](1-4, default=2)[/] [bk.accent]▸[/] "
         ).strip()
     except (EOFError, KeyboardInterrupt):
         return "mid"
@@ -610,8 +583,11 @@ def print_plan(result: dict) -> None:
     _emit({"type": "plan", "data": {
         "markdown": md[:3000],
         "path": path,
-        "sub_agents": n_sa,
-        "steps": n_st,
+        "title": result.get("objective") or "",
+        "sub_agents": result.get("sub_agents") or [],
+        "steps": result.get("steps") or [],
+        "sub_agents_count": n_sa,
+        "steps_count": n_st,
     }})
     console.print()
     console.print(
@@ -630,17 +606,60 @@ def print_plan(result: dict) -> None:
 
 def print_sub_agent(name: str, focus: str) -> None:
     _emit({"type": "sub_agent", "data": {"name": name, "focus": focus}})
-    console.print()
     console.print(
-        f"[bk.muted]\\[{ts()}][/] [bk.accent]◆ sub-agent: {name}[/]"
+        f"   [bk.muted]↳ role[/] [bk.accent]{name}[/]"
         + (f"  [bk.dim]{focus}[/]" if focus else "")
     )
 
 
 def print_profile(name: str, model: str) -> None:
     _emit({"type": "profile", "data": {"name": name, "model": model}})
-    console.print()
     console.print(
-        f"[bk.muted]\\[{ts()}][/] [bk.accent]◆ profile: {name}[/]  "
-        f"[bk.dim]{model}[/]"
+        f"   [bk.muted]↳ profile[/] [bk.accent]{name}[/]  [bk.dim]{model}[/]"
     )
+
+
+# ─── opencode-style footer / status line ────────────────────────────────────
+
+def status_line(mode: str, difficulty: str, max_steps: int,
+                profile: str, used: int, total: int) -> Text:
+    line = Text()
+    line.append(" ", style="")
+    line.append(mode.upper(), style="bold white on red" if mode == "agent" else "bold white")
+    line.append("  ", style="")
+    line.append(f"diff:{difficulty}", style="bk.muted")
+    line.append("  ", style="")
+    line.append(f"steps:{max_steps}", style="bk.muted")
+    line.append("  ", style="")
+    line.append(f"profile:{profile}", style="bk.muted")
+    line.append("  ", style="")
+    pct = (used / total * 100) if total else 0
+    color = "green" if pct < 50 else "yellow" if pct < 80 else "bright_red"
+    line.append(f"ctx {pct:.0f}%", style=color)
+    line.append("  ", style="")
+    line.append(":help", style="bk.dim")
+    return line
+
+
+def print_status_bar(mode: str, difficulty: str, max_steps: int,
+                     profile: str, used: int, total: int):
+    console.print(Rule(style="bk.dash"))
+    console.print(status_line(mode, difficulty, max_steps, profile, used, total))
+
+
+HELP_TEXT = """
+[bk.accent]commands[/]
+  [bold]:auto[/] [bk.dim]:chat[/] [bold]:agent[/] [bold]:dev[/]      switch mode
+  [bold]:diff[/] easy|mid|hard|hell    difficulty preset
+  [bold]:profiles[/]                   list sub-agent LLM profiles
+  [bold]:profile[/] <name>             switch profile manually
+  [bold]:reset[/]                      clear context, plan, profile
+  [bold]:log[/] [bk.dim]:tail[/] [bk.dim]:last[/]              inspect session log
+  [bold]:clear[/]                      clear the screen
+  [bold]:help[/]                       this message
+  [bold]:exit[/] [bk.dim]:q[/]                  quit
+"""
+
+
+def print_help():
+    console.print(HELP_TEXT)

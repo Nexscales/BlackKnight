@@ -2,13 +2,19 @@
 """
 BlackKnight - Autonomous Offensive Security Agent
 Black/red CLI, dual mode (chat + agent), Hermes-style reasoning bar.
-Four difficulty presets (easy/mid/hard/hell), mandatory plan-first workflow,
-sub-agent delegation via act_as() with per-agent API profiles.
+Four difficulty presets (easy/mid/hard/hell), RESEARCH-FIRST workflow:
+research (read-only tools, limited budget) -> write_plan -> act.
+Sub-agent delegation via act_as() with per-agent API profiles.
+
+NOTE: this file is self-contained - no edits to planner.py / difficulty.py /
+prompts.py are required. The old "PLAN FIRST" rule in prompts.py is rewritten
+at runtime by _research_first_prompt().
 """
 
 import argparse
 import json
 import re
+import threading
 import time
 import httpx
 
@@ -16,13 +22,16 @@ from openai import (
     OpenAI,
     APIConnectionError,
     APITimeoutError,
+    APIStatusError,
     RateLimitError,
     InternalServerError,
 )
 
 from config import BASE_URL, MODEL, API_KEY, CONTEXT_WINDOW, DIFFICULTY_ENV
 from logger import SessionLogger, log_event
-from prompts import build_system_prompt, is_refusal, CHAT_MINIMAL
+from prompts import (
+    build_system_prompt, is_refusal, CHAT_MINIMAL, MODE_INSTRUCTIONS,
+)
 from tools import TOOL_SCHEMAS, execute_tool
 from skills import reset_skill_budget
 from difficulty import get_preset, is_valid, DIFFICULTY_ORDER
@@ -46,10 +55,69 @@ RETRYABLE_ERRORS = (
     httpx.RemoteProtocolError,
 )
 
+
+class RunCancelled(Exception):
+    """Raised when the operator aborts a run from the web console."""
+
+
+_CANCEL = threading.Event()
+
+
+def request_cancel() -> None:
+    """Ask the current run to stop at the next safe point (thread-safe)."""
+    _CANCEL.set()
+
+
+def clear_cancel() -> None:
+    _CANCEL.clear()
+
+
+def cancel_requested() -> bool:
+    return _CANCEL.is_set()
+
+
 PLAN_SAFE_TOOLS = {
     "write_plan", "think", "ask_user", "load_skill",
     "remember", "recall", "forget", "finish", "act_as",
 }
+
+# ── research-first workflow ──────────────────────────────────────────────────
+# Before write_plan the agent may RESEARCH: read files, run read-only
+# commands (scans, curl GET, dir/cat), parse with python. Environment
+# research calls are limited by a per-difficulty budget. State-changing
+# tools stay locked until write_plan is called.
+
+RESEARCH_TOOLS = PLAN_SAFE_TOOLS | {"read_file", "run_command", "run_python"}
+PLAN_ONLY_TOOLS = {"write_file", "submit_flag"}
+
+# Default budget of environment calls BEFORE write_plan, per difficulty.
+# Override: env BK_RESEARCH_CALLS=<int> (0 = old plan-first behavior).
+# If difficulty.py later defines "research_max_calls", it wins over this map.
+RESEARCH_BUDGET = {"easy": 3, "mid": 6, "hard": 10, "hell": 20}
+
+
+def _research_limit(preset: dict, difficulty: str) -> int:
+    env = (_os.environ.get("BK_RESEARCH_CALLS") or "").strip()
+    if env.isdigit():
+        return max(0, int(env))
+    return int(preset.get("research_max_calls",
+                          RESEARCH_BUDGET.get(difficulty, 6)))
+
+
+
+
+def _research_first_prompt(mode: str, difficulty: str) -> str:
+    """System prompt (rules live in prompts.py) + research budget."""
+    base = build_system_prompt(mode, difficulty)
+    limit = _research_limit(get_preset(difficulty), difficulty)
+    return (
+        base
+        + "\n\n# RESEARCH BUDGET\nBefore write_plan you may make at most "
+        + str(limit)
+        + " environment tool calls (read_file / run_command / run_python). "
+        "think / recall / load_skill / ask_user do not count. After the "
+        "budget is spent, write_plan is required to unlock the rest."
+    )
 
 _CHAT_HEAD = re.compile(
     r"^\s*(привет|прив|ку|здравствуй|hello|hi|hey|"
@@ -75,8 +143,10 @@ class BlackKnight:
         self._clients: dict = {}
         self.mode = mode
         self._apply_difficulty(difficulty)
+        self.research_calls = 0
         self.messages = [
-            {"role": "system", "content": build_system_prompt(mode, difficulty)}
+            {"role": "system",
+             "content": _research_first_prompt(mode, difficulty)}
         ]
         self.flag_captured = None
         self.task_finished = False
@@ -98,27 +168,31 @@ class BlackKnight:
         self._apply_difficulty(name)
         self.messages[0] = {
             "role": "system",
-            "content": build_system_prompt(self.mode, self.difficulty),
+            "content": _research_first_prompt(self.mode, self.difficulty),
         }
         log_event("difficulty_changed", difficulty=self.difficulty,
                   max_steps=self.max_steps)
 
     def set_mode(self, mode: str) -> None:
+        if mode not in MODE_INSTRUCTIONS:
+            mode = "auto"
         self.mode = mode
         self.messages[0] = {
             "role": "system",
-            "content": build_system_prompt(mode, self.difficulty),
+            "content": _research_first_prompt(mode, self.difficulty),
         }
+        log_event("mode_changed", mode=self.mode, difficulty=self.difficulty)
 
     def reset(self) -> None:
         self.messages = [{
             "role": "system",
-            "content": build_system_prompt(self.mode, self.difficulty),
+            "content": _research_first_prompt(self.mode, self.difficulty),
         }]
         self.flag_captured = None
         self.task_finished = False
         self.finish_summary = ""
         self.context_used = 0
+        self.research_calls = 0
         planner.reset_plan()
         agents.reset_current()
 
@@ -163,6 +237,9 @@ class BlackKnight:
                       kept=keep_recent, mode=self.difficulty)
 
     def call_llm(self, allow_tools: bool, max_tokens_override=None):
+        if cancel_requested():
+            raise RunCancelled("cancelled by operator")
+
         max_retries = 3
         resp = None
         last_error = None
@@ -203,6 +280,16 @@ class BlackKnight:
                           error=str(e), wait=wait, profile=profile["name"])
                 ui.print_error(f"API retry {attempt + 1}/{max_retries} in {wait}s")
                 time.sleep(wait)
+            except APIStatusError as e:
+                # 400 / 401 / 403 / 404 / 5xx that is not retryable: show a
+                # readable error instead of a traceback that kills the CLI.
+                status = getattr(e, "status_code", "?")
+                detail = getattr(e, "message", None) or str(e)
+                msg = f"API error {status}: {detail}"
+                log_event("api_error", status=status, error=str(e),
+                          profile=profile["name"], model=model_id)
+                ui.print_error(msg)
+                raise RuntimeError(msg) from e
 
         if resp is None:
             raise last_error or RuntimeError("LLM call failed")
@@ -240,12 +327,56 @@ class BlackKnight:
         ).strip()
         return thought, visible
 
+    def _plan_gate(self, name: str):
+        """Pre-plan phase: research allowed within budget, mutations blocked.
+
+        Returns None if the call may proceed, or a JSON error string.
+        think / ask_user / load_skill / memory tools never consume budget.
+        """
+        if planner.is_plan_written() or name in PLAN_SAFE_TOOLS:
+            return None
+        if name in PLAN_ONLY_TOOLS or name not in RESEARCH_TOOLS:
+            return json.dumps({
+                "ok": False,
+                "error": "plan_required",
+                "hint": (
+                    "State-changing actions require a plan. Gather facts "
+                    "first (read_file, read-only run_command), then call "
+                    "write_plan(...) grounded in what you found."
+                ),
+            }, ensure_ascii=False)
+        limit = _research_limit(self.preset, self.difficulty)
+        if self.research_calls >= limit:
+            return json.dumps({
+                "ok": False,
+                "error": "research_budget_exhausted",
+                "hint": (
+                    "Research budget (" + str(limit) + " environment calls) "
+                    "is spent. Summarize findings in think, then call "
+                    "write_plan(...) now - remaining tools unlock after "
+                    "the plan."
+                ),
+            }, ensure_ascii=False)
+        self.research_calls += 1
+        log_event("research_call", name=name,
+                  used=self.research_calls, limit=limit)
+        return None
+
     def step(self, allow_tools: bool, max_tokens_override=None) -> bool:
         self._trim_messages()
 
         resp = self.call_llm(allow_tools=allow_tools,
                              max_tokens_override=max_tokens_override)
-        msg = resp.choices[0].message
+        choices = getattr(resp, "choices", None)
+        if not choices:
+            # Some providers occasionally return an empty/None choices list
+            # (content filter, load balancer glitch). Fail readable, not with
+            # a bare TypeError ('NoneType' object is not subscriptable).
+            log_event("empty_choices", profile=agents.current_name())
+            raise RuntimeError(
+                "LLM returned no choices (provider glitch) - retry the task"
+            )
+        msg = choices[0].message
 
         thought, visible = self.split_thought(msg.content or "")
 
@@ -303,20 +434,9 @@ class BlackKnight:
             ui.print_tool_call(name, args)
             t0 = time.time()
 
-            if (
-                allow_tools
-                and not planner.is_plan_written()
-                and name not in PLAN_SAFE_TOOLS
-            ):
-                result = json.dumps({
-                    "ok": False,
-                    "error": "plan_required",
-                    "hint": (
-                        "You must call write_plan(...) before any environment "
-                        "action. Write a markdown plan with objective, "
-                        "role-based sub_agents, and ordered steps."
-                    ),
-                }, ensure_ascii=False)
+            blocked = self._plan_gate(name) if allow_tools else None
+            if blocked is not None:
+                result = blocked
             elif name == "ask_user":
                 answer = ui.prompt_ask_user(
                     question=args.get("question", ""),
@@ -368,6 +488,7 @@ class BlackKnight:
     def run_turn(self, user_input: str) -> None:
         self.task_finished = False
         self.finish_summary = ""
+        self.research_calls = 0
         reset_skill_budget()
         planner.reset_plan()
         planner.set_context(user_input, self.difficulty, self.max_steps)
@@ -384,6 +505,7 @@ class BlackKnight:
             original_system = self.messages[0]
             self.messages[0] = {"role": "system", "content": CHAT_MINIMAL}
             try:
+                self._trim_messages()
                 self.step(allow_tools=False, max_tokens_override=256)
             finally:
                 self.messages[0] = original_system
@@ -393,6 +515,10 @@ class BlackKnight:
 
     def _loop(self, allow_tools: bool) -> None:
         for i in range(self.max_steps):
+            if cancel_requested():
+                log_event("run_cancelled", step=i, difficulty=self.difficulty)
+                ui.print_error("run cancelled by operator")
+                raise RunCancelled("cancelled by operator")
             ui.print_step(i, self.max_steps)
             keep_going = self.step(allow_tools=allow_tools)
 
@@ -516,10 +642,14 @@ class BlackKnight:
 
 def run_task(task: str, mode: str = "agent", difficulty: str = "mid") -> dict:
     """
-    Run a single task headlessly — no CLI input, no banner, no args parsing.
+    Run a single task headlessly - no CLI input, no banner, no args parsing.
     Used by web_server.py. Returns summary info.
     """
     agents.init()
+    # The profile is module-global state shared by every run in this process.
+    # Without this reset a profile switched by the previous run (act_as) leaks
+    # into the next one, so the same task silently runs on a different model.
+    agents.reset_current()
 
     logger = SessionLogger(model=MODEL, mode=mode)
     SessionLogger.set_current(logger)
@@ -530,20 +660,30 @@ def run_task(task: str, mode: str = "agent", difficulty: str = "mid") -> dict:
         agent.run_turn(task)
         return {
             "ok": True,
+            "mode": mode,
+            "difficulty": difficulty,
             "context_used": agent.context_used,
             "context_total": agent.context_total,
             "finished": agent.task_finished,
             "summary": agent.finish_summary,
+            "profile": agents.current_name(),
         }
     except Exception as e:
+        cancelled = isinstance(e, RunCancelled)
         return {
             "ok": False,
-            "error": str(e),
+            "mode": mode,
+            "difficulty": difficulty,
+            "error": "cancelled" if cancelled else str(e),
             "context_used": agent.context_used,
             "context_total": agent.context_total,
+            "profile": agents.current_name(),
         }
     finally:
+        clear_cancel()
         logger.close()
+        SessionLogger.set_current(None)
+        agents.reset_current()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -578,76 +718,109 @@ def resolve_difficulty(args: argparse.Namespace) -> str:
 
 
 def handle_command(cmd: str, agent: BlackKnight, logger: SessionLogger) -> bool:
-    c = cmd.lower()
+    c = cmd.strip()
+    low = c.lower()
 
-    if c in (":exit", ":q", "exit", "quit"):
+    if low in (":exit", ":q", "exit", "quit"):
         raise SystemExit(0)
 
-    if c in (":reset", "reset"):
+    if low in (":help", ":h", "help", ":?"):
+        ui.print_help()
+        return True
+
+    if low in (":clear", "clear", ":cls"):
+        ui.console.clear()
+        ui.console.print(ui.banner(agent.mode, agent.difficulty, agent.max_steps))
+        return True
+
+    if low in (":reset", "reset"):
         try:
             agent.reset()
-            ui.console.print(f"[bk.muted]context reset. mode: {agent.mode}, "
-                             f"difficulty: {agent.difficulty}, "
-                             f"profile: {agents.current_name()}[/]")
+            ui.console.print(
+                f"[bk.muted]context reset. mode: {agent.mode}, "
+                f"difficulty: {agent.difficulty}, "
+                f"profile: {agents.current_name()}[/]"
+            )
         except Exception as e:
             ui.print_error(f"reset failed: {e}")
         return True
 
-    if c in (":auto", ":chat", ":agent", ":dev"):
+    if low in (":auto", ":chat", ":agent", ":dev"):
         try:
-            agent.set_mode(c[1:])
-            logger.mode = c[1:]
-            ui.console.print(f"[bk.muted]mode -> {agent.mode}[/]")
+            agent.set_mode(low[1:])
+            logger.mode = agent.mode
+            ui.console.print(f"[bk.muted]mode → [bk.accent]{agent.mode}[/][/]")
         except Exception as e:
             ui.print_error(f"mode switch failed: {e}")
         return True
 
-    if c in (":profiles", "profiles"):
+    if low in (":profiles", "profiles"):
         ui.console.print("[bk.muted]" + agents.describe() + "[/]")
         return True
 
-    if c.startswith(":profile ") or c.startswith("profile "):
+    # `:profile` with no argument should list, not fall through to ":bogus"
+    if low in (":profile", "profile"):
+        ui.console.print(
+            f"[bk.muted]available: {', '.join(agents.list_names())}"
+            f"  (current: {agents.current_name()})[/]"
+        )
+        return True
+
+    if low.startswith(":profile ") or low.startswith("profile "):
         parts = c.split(None, 1)
-        if len(parts) > 1 and agents.set_current(parts[1].strip()):
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if name and agents.set_current(name):
             p = agents.get()
             ui.console.print(
-                f"[bk.muted]profile -> {p['name']}  model={p['model']}[/]"
+                f"[bk.muted]profile → [bk.accent]{p['name']}[/]  "
+                f"model={p['model']}[/]"
             )
         else:
             ui.console.print(
-                f"[bk.muted]profiles: {', '.join(agents.list_names())}"
+                f"[bk.muted]available: {', '.join(agents.list_names())}"
                 f"  (current: {agents.current_name()})[/]"
             )
         return True
 
-    if c.startswith(":diff") or c.startswith("diff"):
+    # NOTE: `:diff` must be matched exactly here. The old `startswith("diff")`
+    # made the word "difficulty" (and any sentence starting with "diff")
+    # swallow the command and print the usage line instead of switching.
+    if low == ":diff" or low == "diff" or low.startswith(":diff ") \
+            or low.startswith("diff "):
         parts = c.split()
-        if len(parts) > 1 and is_valid(parts[1]):
+        if len(parts) > 1 and is_valid(parts[1].lower()):
             try:
-                agent.set_difficulty(parts[1])
+                agent.set_difficulty(parts[1].lower())
                 ui.console.print(
-                    f"[bk.muted]difficulty -> {agent.difficulty} "
+                    f"[bk.muted]difficulty → [bk.accent]{agent.difficulty}[/] "
                     f"({agent.max_steps} steps)[/]"
                 )
             except Exception as e:
                 ui.print_error(f"difficulty switch failed: {e}")
         else:
             ui.console.print(
-                f"[bk.muted]difficulty: {agent.difficulty} "
-                f"({agent.max_steps} steps) - "
+                f"[bk.muted]difficulty: [bk.accent]{agent.difficulty}[/] "
+                f"({agent.max_steps} steps) — "
                 f":diff easy|mid|hard|hell[/]"
             )
         return True
 
-    if c in (":log", "log"):
+    if low in (":log", "log"):
         ui.print_log_path(logger.path)
         return True
-    if c in (":tail", "tail"):
+    if low in (":tail", "tail"):
         ui.print_log_tail(logger.path, n=20)
         return True
-    if c in (":last", "last"):
+    if low in (":last", "last"):
         ui.print_last_tool_result(logger.path)
         return True
+
+    if low.startswith(":"):
+        ui.console.print(
+            f"[bk.warn]unknown command: {c}[/]  [bk.dim](try :help)[/]"
+        )
+        return True
+
     return False
 
 
@@ -659,8 +832,8 @@ def main() -> None:
     preset = get_preset(difficulty)
 
     effective_mode = args.mode
-    if args.task and args.mode == "auto":
-        effective_mode = "agent"
+    # `auto` is kept for one-shot tasks too: run_turn() classifies obvious
+    # greetings as chat and everything else as an agent task.
 
     ui.console.clear()
     ui.console.print(ui.banner(effective_mode, difficulty, preset["max_steps"]))
@@ -678,18 +851,30 @@ def main() -> None:
 
     try:
         if args.task:
-            ui.console.print(f"\n[bk.user]\\[{ui.ts()}] you[/] > {args.task}")
-            agent.run_turn(args.task)
-            ui.print_context_status(agent.context_used, agent.context_total)
+            ui.console.print(f"[bk.accent]▸[/] {args.task}")
+            try:
+                agent.run_turn(args.task)
+            except KeyboardInterrupt:
+                ui.console.print("\n[bk.muted]interrupted.[/]")
+                return
+            except Exception as e:
+                log_event("run_error", error=str(e))
+                ui.print_error(f"run failed: {e}")
+                return
+            ui.print_status_bar(agent.mode, agent.difficulty, agent.max_steps,
+                                agents.current_name(),
+                                agent.context_used, agent.context_total)
             return
 
         while True:
-            ui.print_context_status(agent.context_used, agent.context_total)
+            ui.print_status_bar(agent.mode, agent.difficulty, agent.max_steps,
+                                agents.current_name(),
+                                agent.context_used, agent.context_total)
 
             try:
                 user_input = ui.prompt_user_input()
             except (EOFError, KeyboardInterrupt):
-                ui.console.print("\n[bk.muted]bye.[/]")
+                ui.console.print("[bk.muted]bye.[/]")
                 return
 
             if not user_input:
@@ -701,9 +886,18 @@ def main() -> None:
             except SystemExit:
                 return
 
-            agent.run_turn(user_input)
+            try:
+                ui.console.print(f"[bold white]●[/] [bk.accent]you[/]")
+                ui.console.print(f"  {user_input}")
+                agent.run_turn(user_input)
+            except KeyboardInterrupt:
+                ui.console.print("\n[bk.muted]interrupted — type :exit to quit.[/]")
+            except Exception as e:
+                log_event("run_error", error=str(e))
+                ui.print_error(f"run failed: {e}")
 
     finally:
+        clear_cancel()
         logger.close()
 
 

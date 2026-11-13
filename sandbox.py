@@ -46,12 +46,43 @@ def decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _normalize_rel_path(path: str) -> str:
+    """Accept `notes.txt`, `./notes.txt`, `sandbox/notes.txt` and
+    `./sandbox/notes.txt` as the SAME file inside the sandbox.
+
+    The model often prefixes paths with `./sandbox/` because the system
+    prompt mentions that folder; without this normalization it creates a
+    nested `sandbox/sandbox/...` directory.
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return path
+
+    s = str(path).strip()
+    while s.startswith("./") or s.startswith(".\\"):
+        s = s[2:]
+    s = s.replace("\\", "/")
+    while True:
+        if s == "sandbox":
+            s = ""
+            break
+        if s.startswith("sandbox/"):
+            s = s[len("sandbox/"):]
+            continue
+        break
+    while s.startswith("./"):
+        s = s[2:]
+    return s
+
+
 def safe_path(path: str) -> Path:
     """Resolve `path` inside SANDBOX_DIR; reject any escape (component-wise,
     not prefix-based — `sandbox_evil` must not be accepted for `sandbox`)."""
     if not path:
         raise ValueError("empty path")
-    p = (SANDBOX_DIR / path).resolve()
+
+    rel = _normalize_rel_path(path) or "."
+    p = (SANDBOX_DIR / rel).resolve()
     try:
         p.relative_to(SANDBOX_DIR)
     except ValueError:

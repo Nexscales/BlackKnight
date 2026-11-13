@@ -16,9 +16,15 @@ for _s in (_sys.stdout, _sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-        
+
+# ── project root ──
+# All relative paths are resolved against the project folder, NOT the
+# current working directory, so the app behaves the same when started
+# from a shortcut, another folder, or a different drive.
+BASE_DIR = Path(__file__).resolve().parent
+
 # ── load .env ──
-_ENV_FILE = Path(__file__).parent / ".env"
+_ENV_FILE = BASE_DIR / ".env"
 
 def _load_dotenv() -> None:
     if not _ENV_FILE.exists():
@@ -46,8 +52,9 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 # ── LLM provider ──
-BASE_URL = os.getenv("BK_BASE_URL", "")
-MODEL    = os.getenv("BK_MODEL", "")
+# Defaults match README.md; .env values win when set.
+BASE_URL = os.getenv("BK_BASE_URL", "https://anymodel.org/v1").strip()
+MODEL    = os.getenv("BK_MODEL", "cx/gpt-6-luna").strip()
 
 API_KEY = os.getenv("BK_API_KEY", "").strip()
 if not API_KEY:
@@ -69,15 +76,23 @@ CONTEXT_WINDOW = int(os.getenv("BK_CONTEXT_WINDOW", "1000000"))
 DIFFICULTY_ENV = os.getenv("BK_DIFFICULTY", "").lower().strip()
 
 # ── sandbox ──
-SANDBOX_DIR = Path(os.getenv("BK_SANDBOX_DIR", "./sandbox")).resolve()
+def _resolve_dir(value: str, fallback: str) -> Path:
+    raw = (value or fallback).strip() or fallback
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = BASE_DIR / p
+    return p.resolve()
+
+
+SANDBOX_DIR = _resolve_dir(os.getenv("BK_SANDBOX_DIR", "./sandbox"), "./sandbox")
 SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_OUTPUT      = 30000
-MAX_FILE_SIZE   = 5_000_000
+MAX_OUTPUT      = 40000
+MAX_FILE_SIZE   = 20_000_000
 DEFAULT_TIMEOUT = 1800
 MAX_TIMEOUT     = 2600
 
-LOGS_DIR = Path(os.getenv("BK_LOGS_DIR", "./logs")).resolve()
+LOGS_DIR = _resolve_dir(os.getenv("BK_LOGS_DIR", "./logs"), "./logs")
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 DANGEROUS_PATTERNS = [

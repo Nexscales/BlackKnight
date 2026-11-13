@@ -1,5 +1,7 @@
 """
 BlackKnight - tool schemas + dispatcher.
+Workflow: RESEARCH (read-only tools, limited budget) -> write_plan -> ACT.
+The pre-plan gate itself lives in main.py (_plan_gate).
 """
 
 import json
@@ -8,14 +10,6 @@ import re
 from sandbox import run_command, run_python, write_file, read_file
 from skills import load_skill, skill_budget_left
 from memory import remember, recall, forget
-import sys as _sys, os as _os
-_os.environ["PYTHONUTF8"] = "1"
-_os.environ["PYTHONIOENCODING"] = "utf-8"
-for _s in (_sys.stdout, _sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 
 # ── flag validation ──
 # Accepts: prefix{content} (any printable except whitespace/}) and 32-64 hex.
@@ -40,9 +34,11 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "write_plan",
             "description": (
-                "MANDATORY before any environment action. Write the task plan "
-                "to a markdown file. Split the work into role-based sub-agents, "
-                "then list ordered concrete steps."
+                "Write the task plan to a markdown file AFTER the research "
+                "phase. Ground steps in facts gathered during research "
+                "(ports, versions, files) - not guesses. Split the work into "
+                "role-based sub-agents, then list ordered concrete steps. "
+                "Unlocks state-changing tools (write_file, submit_flag)."
             ),
             "parameters": {
                 "type": "object",
@@ -119,7 +115,10 @@ TOOL_SCHEMAS = [
             "name": "run_command",
             "description": (
                 "Execute a shell command in the sandbox and return its output. "
-                "Use only commands that exist on the current platform."
+                "Use only commands that exist on the current platform. "
+                "Allowed during pre-plan RESEARCH for read-only fact-gathering "
+                "(dir/ls, cat/type, curl GET, nmap) within the research budget. "
+                "State-changing commands require write_plan first."
             ),
             "parameters": {
                 "type": "object",
@@ -135,7 +134,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_python",
-            "description": "Execute Python code in the sandbox and return stdout/stderr.",
+            "description": (
+                "Execute Python code in the sandbox and return stdout/stderr. "
+                "During pre-plan RESEARCH use it only for parsing/analysis, "
+                "not for state changes."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -151,8 +154,12 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "write_file",
             "description": (
-                "Write a file inside the sandbox directory. Use this to produce "
-                "code, exploits, scripts, notes - WITHOUT executing them."
+                "Write a file inside the sandbox directory. Paths are relative "
+                "to the sandbox ROOT: use 'notes.txt' or 'src/app.py'. Do NOT "
+                "prefix the path with 'sandbox/' or './sandbox/' (that would "
+                "create nested folders). Use this to produce "
+                "code, exploits, scripts, notes - WITHOUT executing them. "
+                "Requires write_plan first (state-changing tool)."
             ),
             "parameters": {
                 "type": "object",
@@ -168,7 +175,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from the sandbox directory.",
+            "description": (
+                "Read a file from the sandbox directory. Paths are relative "
+                "to the sandbox ROOT: use 'notes.txt', not 'sandbox/notes.txt'. "
+                "Allowed during pre-plan RESEARCH (counts against the research "
+                "budget)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
@@ -196,7 +208,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "think",
-            "description": "Explicit planning step. Use when the next move is unclear.",
+            "description": (
+                "Explicit reasoning step. Use to summarize research findings "
+                "before write_plan, or when the next move is unclear. "
+                "Free - does not consume the research budget."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"reasoning": {"type": "string"}},
