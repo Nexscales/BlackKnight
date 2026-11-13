@@ -816,19 +816,25 @@ const MODE_DESC = {
   chat:'talk only — no tools, minimal prompt.',
   dev:'code work inside ./sandbox — files, python, fixes.'
 };
-function setMode(m, silent){
+function setMode(m, silent, fromServer){
   if(!MODE_DESC[m]) return;
-  state.mode = m; localStorage.setItem('bk_mode', m);
+  state.mode = m;
+  try{ localStorage.setItem('bk_mode', m); }catch(e){}
   $$('#modeSeg button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   $('#modeDesc').textContent = MODE_DESC[m];
   $('#sbMode').textContent = m.toUpperCase();
   if(!silent) log('sys', 'mode → ' + m);
+  // user-initiated switch: tell the server, so every other window
+  // (desktop / other tabs) switches too and the next task inherits it.
+  if(!fromServer && SERVED) wsSend({type:'set_mode', mode: m});
 }
-function setDiff(d, silent){
-  state.diff = d; localStorage.setItem('bk_diff', d);
+function setDiff(d, silent, fromServer){
+  state.diff = d;
+  try{ localStorage.setItem('bk_diff', d); }catch(e){}
   $$('#diffRow button').forEach(b => b.classList.toggle('active', b.dataset.diff === d));
   $('#sbDiff').textContent = 'diff:' + d;
   if(!silent) log('sys', 'difficulty → ' + d);
+  if(!fromServer && SERVED) wsSend({type:'set_difficulty', difficulty: d});
 }
 $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('button[data-mode]'); if(b) setMode(b.dataset.mode); });
 $('#diffRow').addEventListener('click', e => { const b = e.target.closest('button[data-diff]'); if(b) setDiff(b.dataset.diff); });
@@ -913,7 +919,7 @@ function setStep(i, status){
 }
 function agentSwitch(name, profile, model){
   $('#sbAgent').textContent = 'agent:' + name;
-  $('#sbProfile').textContent = 'profile:' + (profile || 'default');
+  if(profile) $('#sbProfile').textContent = 'profile:' + profile;
   $$('.agent-chip').forEach(c => c.classList.toggle('live', c.dataset.agent === name));
   log('agent', 'sub-agent: ' + name + (model ? '  ·  ' + model : ''), {name:'act_as'});
 }
@@ -945,6 +951,12 @@ function addEvent(evt){
   const d = evt.data !== undefined ? evt.data : evt;
   switch(t){
     case 'model_info': case 'model': setModel(d); break;
+    case 'session_state':
+      // server-authoritative mode/difficulty — sync local UI without
+      // re-announcing to the server (fromServer = true)
+      if(d.mode) setMode(d.mode, true, true);
+      if(d.difficulty) setDiff(d.difficulty, true, true);
+      break;
     case 'context': setContext(d.used || 0, d.max || d.window || state.win); break;
     case 'status': setRunning(!!d.running); break;
     case 'task_start':
@@ -952,6 +964,10 @@ function addEvent(evt){
       state.steps = state.tools = 0;
       bump($('#stSteps'), 0); bump($('#stTools'), 0);
       log('user', d.task || '');
+      // the run really starts with THESE values — force local UI to match,
+      // even if this window never sent the task
+      if(d.mode) setMode(d.mode, true, true);
+      if(d.difficulty) setDiff(d.difficulty, true, true);
       setRunning(true);
       break;
     case 'task_result':
@@ -959,7 +975,12 @@ function addEvent(evt){
       else { log('ok', d.summary || 'task finished', {name:'finish'}); toast('run finished ✓'); }
       if(d.context_used != null) setContext(d.context_used, d.context_total || state.win);
       break;
-    case 'done': setRunning(false); break;
+    case 'done':
+      // ui.print_done sends the summary as a string; the server's run-end
+      // marker sends `true`. Show text, always drop out of "running".
+      if(typeof d === 'string' && d.trim()) log('ok', d, {name:'done'});
+      setRunning(false);
+      break;
     case 'error': log('err', typeof d === 'string' ? d : (d.message || JSON.stringify(d))); break;
     case 'log': log(d.level || 'info', d.text || ''); break;
     case 'tool_call': {
@@ -971,13 +992,17 @@ function addEvent(evt){
     }
     case 'tool_result': {
       const res = d.result !== undefined ? d.result : d;
-      const ok = !(res && typeof res === 'object' && (res.error || res.ok === false));
+      let parsed = res;
+      if(typeof res === 'string'){ try{ parsed = JSON.parse(res); }catch(e){ parsed = res; } }
+      const ok = !(parsed && typeof parsed === 'object' && (parsed.error || parsed.ok === false));
       const dur = d.dur != null ? d.dur : d.elapsed;
       const ds = dur != null ? '(' + (typeof dur === 'number' ? dur.toFixed(1) + 's' : dur) + ')  ' : '';
       log(ok ? 'ok' : 'err', ds + (ok ? 'done' : 'failed'), {name: d.name || evt.name, out: fmtToolOutput(res)});
       break;
     }
-    case 'thought': log('agent', d.text || '', {name:'thought'}); break;
+    case 'thought':
+      log('agent', typeof d === 'string' ? d : (d.text || d.reasoning || ''), {name:'thinking'});
+      break;
     case 'step': log('sys', 'step ' + (d.i != null ? d.i : (d.step != null ? d.step : '')) + (d.max ? '/' + d.max : '')); break;
     case 'plan': {
       if(Array.isArray(d.steps) && d.steps.length){
@@ -990,11 +1015,19 @@ function addEvent(evt){
       break;
     }
     case 'plan_step': setStep(d.index, d.status); break;
-    case 'agent': case 'profile': case 'profile_switch':
+    case 'profiles': {
+      const ps = d.profiles || [];
+      log('sys', 'profiles: ' + (ps.length ? ps.join(' · ') : 'default') +
+          '  (active: ' + (d.active || 'default') + ')');
+      $('#sbProfile').textContent = 'profile:' + (d.active || 'default');
+      break;
+    }
+    case 'sub_agent': case 'agent': case 'profile': case 'profile_switch':
       agentSwitch(d.sub_agent || d.name || d.profile || '?', d.profile || d.name, d.model); break;
-    case 'final': log('ok', d.text || '', {name:'final'}); break;
-    case 'chat': log('ok', d.text || ''); break;
-    case 'flag': case 'flag_captured': log('ok', '🚩 flag: ' + (d.flag || '')); break;
+    case 'final': log('ok', typeof d === 'string' ? d : (d.text || ''), {name:'final'}); break;
+    case 'chat': log('ok', typeof d === 'string' ? d : (d.text || '')); break;
+    case 'assistant': log('ok', typeof d === 'string' ? d : (d.text || '')); break;
+    case 'flag': case 'flag_captured': log('ok', '🚩 flag: ' + (typeof d === 'string' ? d : (d.flag || ''))); break;
     case 'finish':
       log('ok', d.summary || 'task finished', {name:'finish'});
       toast('run finished ✓'); setRunning(false);
@@ -1149,7 +1182,11 @@ function execSlash(line){
   if(cmd === ':reset') return resetSession();
   if(cmd === ':clear'){ $('#stream').innerHTML = ''; return; }
   if(cmd === ':help') return log('sys', SLASH.map(s => s[0] + ' — ' + s[1]).join('\n'));
-  if(cmd === ':profiles') return log('sys', 'profiles: default · recon-local · exploit  (see server .env)');
+  if(cmd === ':profiles'){
+    if(SERVED && wsSend({type:'profiles'})) return;
+    log('sys', 'profiles: connect to a running server to list them (run_web.bat)');
+    return;
+  }
   log('warn', 'unknown command: ' + cmd + '  (try :help)');
 }
 
